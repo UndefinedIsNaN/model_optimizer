@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════
+#  Raspberry Pi 3B  (1 GB RAM, 4 cores)
+# ═══════════════════════════════════════════════════
+
+python benchmark.py \
+    --models-dir ./output \
+    --n-ctx 256 \
+    --n-threads 4 \
+    --gen-tokens 64 \
+    --ppl-samples 5 \
+    --timeout 300
+
+# ═══════════════════════════════════════════════════
+#  Orange Pi 5+  (16 GB RAM, 8 cores)
+# ═══════════════════════════════════════════════════
+
+python benchmark.py \
+    --models-dir ./output \
+    --n-ctx 512 \
+    --n-threads 8 \
+    --gen-tokens 128 \
+    --ppl-samples 20 \
+    --timeout 600
+
+# ═══════════════════════════════════════════════════
+#  Быстрый тест — только скорость, без перплексии
+# ═══════════════════════════════════════════════════
+
+python benchmark.py \
+    --models-dir ./output \
+    --skip-perplexity \
+    --gen-tokens 32
+
+# ═══════════════════════════════════════════════════
+#  Конкретные модели + свои промпты
+# ═══════════════════════════════════════════════════
+
+python benchmark.py \
+    --models \
+        output/Qwen2-0.5B_prune_first_structured_ptq_Q4_K_M.gguf \
+        output/Qwen2-0.5B_quant_first_structured_qat_Q4_K_M.gguf \
+    --prompts \
+        "Расскажи сказку про кота" \
+        "Explain quantum physics" \
+    --ppl-samples 10
+
+# ═══════════════════════════════════════════════════
+#  Полный бенчмарк всех 9 моделей из предыдущего шага
+# ═══════════════════════════════════════════════════
+
+python benchmark.py \
+    --models-dir ./output \
+    --n-ctx 512 \
+    --gen-tokens 128 \
+    --gen-repeats 2 \
+    --ppl-samples 15 \
+    --timeout 600 \
+    --output-dir ./bench_results

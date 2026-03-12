@@ -1,0 +1,7 @@
+torch>=2.0
+transformers>=4.36
+huggingface_hub>=0.20
+datasets>=2.16
+sentencepiece
+protobuf
+safetensors

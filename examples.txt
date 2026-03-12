@@ -1,0 +1,73 @@
+# ═══════════════════════════════════════════════
+#  PTQ — быстро, без обучения
+# ═══════════════════════════════════════════════
+
+# Magnitude 20% → PTQ Q4_K_M
+python main.py --repo Qwen/Qwen2-0.5B \
+    --pruning magnitude_20 \
+    --quant-method ptq \
+    --quant-type Q4_K_M \
+    --order prune_first
+
+# Structured → PTQ Q4_K_M (с recovery)
+python main.py --repo Qwen/Qwen2-0.5B \
+    --pruning structured \
+    --quant-method ptq \
+    --quant-type Q4_K_M \
+    --order prune_first \
+    --recovery-steps 200
+
+# ═══════════════════════════════════════════════
+#  QAT — с обучением, лучше качество
+# ═══════════════════════════════════════════════
+
+# Прунинг → QAT → Q4_K_M
+python main.py --repo Qwen/Qwen2-0.5B \
+    --pruning structured \
+    --quant-method qat \
+    --quant-type Q4_K_M \
+    --order prune_first \
+    --qat-steps 150
+
+# QAT → Прунинг → Q4_K_M (лучшее качество)
+python main.py --repo Qwen/Qwen2-0.5B \
+    --pruning structured \
+    --quant-method qat \
+    --quant-type Q4_K_M \
+    --order quant_first \
+    --qat-steps 200 \
+    --recovery-steps 100
+
+# ═══════════════════════════════════════════════
+#  Полный бенчмарк — все 9 рабочих комбинаций
+# ═══════════════════════════════════════════════
+
+for PRUNING in magnitude_20 magnitude_30 structured; do
+
+  # PTQ (только prune_first имеет смысл)
+  python main.py --repo Qwen/Qwen2-0.5B \
+      --pruning $PRUNING \
+      --quant-method ptq \
+      --quant-type Q4_K_M \
+      --order prune_first \
+      --recovery-steps 50
+
+  # QAT × prune_first
+  python main.py --repo Qwen/Qwen2-0.5B \
+      --pruning $PRUNING \
+      --quant-method qat \
+      --quant-type Q4_K_M \
+      --order prune_first \
+      --qat-steps 100 \
+      --recovery-steps 50
+
+  # QAT × quant_first
+  python main.py --repo Qwen/Qwen2-0.5B \
+      --pruning $PRUNING \
+      --quant-method qat \
+      --quant-type Q4_K_M \
+      --order quant_first \
+      --qat-steps 100 \
+      --recovery-steps 50
+
+done
