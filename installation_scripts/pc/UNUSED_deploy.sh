@@ -12,12 +12,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-# ----- НАСТРОЙТЕ ПОД СВОИ УСТРОЙСТВА -----
 DEVICES=(
-    "rpi|pi@raspberrypi.local"
+    "rpi|pi@raspberrypi.local" # Тут надо настраивать
     "opi|orangepi@orangepi.local"
 )
-# ------------------------------------------
+
 
 GGUF_DIR="${PROJECT_DIR}/output"
 FILTER="${1:-all}"

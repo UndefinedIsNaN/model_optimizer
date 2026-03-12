@@ -1,3 +1,4 @@
 output/
 work/
 pipelinetest.ipynb
+__pycache__/
