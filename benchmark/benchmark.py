@@ -213,12 +213,15 @@ def _benchmark_worker(
             return
 
         # ── 1. Загрузка модели ──
+        need_ppl = len(config.get("ppl_texts", [])) > 0
+
         t0 = time.perf_counter()
         llm = Llama(
             model_path=model_path,
             n_ctx=config["n_ctx"],
             n_threads=config.get("n_threads", os.cpu_count() or 4),
             n_gpu_layers=config.get("n_gpu_layers", 0),
+            logits_all=need_ppl,
             verbose=False,
         )
         result["load_time_sec"] = time.perf_counter() - t0
@@ -319,18 +322,11 @@ def _measure_generation(
 def _measure_perplexity(
     llm, texts: List[str], config: Dict[str, Any], result: Dict[str, Any],
 ) -> None:
-    """
-    Перплексия через token log-probabilities.
-
-    Для каждого текста:
-      1. create_completion(text, echo=True, logprobs=1)
-      2. Собираем token_logprobs (вероятности каждого токена)
-      3. PPL = exp(-mean(log_probs))
-    """
     total_nll = 0.0
     total_count = 0
-    max_chars = config.get("n_ctx", 512) * 4  # ~4 символа на токен
+    max_chars = config.get("n_ctx", 512) * 4
 
+    # Метод 1: create_completion с echo=True (работает при logits_all=True)
     for text in texts:
         text = text.strip()
         if len(text) < 20:
@@ -341,10 +337,10 @@ def _measure_perplexity(
         try:
             output = llm.create_completion(
                 text,
-                max_tokens=1,      # генерируем 1 токен (минимум)
-                logprobs=1,         # вернуть log-вероятности
-                echo=True,          # включить промпт в ответ
-                temperature=1.0,    # без искажения вероятностей
+                max_tokens=1,
+                logprobs=1,
+                echo=True,
+                temperature=1.0,
             )
 
             choice = output["choices"][0]
@@ -365,11 +361,60 @@ def _measure_perplexity(
         except Exception:
             continue
 
+    # Метод 2 (fallback): tokenize + eval если метод 1 не дал результатов
+    if total_count == 0:
+        total_nll, total_count = _ppl_fallback_eval(llm, texts, config)
+
     if total_count > 0:
-        avg_nll = min(total_nll / total_count, 100)  # clamp от overflow
+        avg_nll = min(total_nll / total_count, 100)
         result["perplexity"] = math.exp(avg_nll)
     else:
         result["perplexity"] = float("inf")
+
+
+def _ppl_fallback_eval(
+    llm, texts: List[str], config: Dict[str, Any],
+) -> tuple:
+    """Fallback: tokenize + eval + ручной подсчет logprobs."""
+    total_nll = 0.0
+    total_count = 0
+    n_ctx = config.get("n_ctx", 512)
+
+    for text in texts:
+        text = text.strip()
+        if len(text) < 20:
+            continue
+
+        try:
+            tokens = llm.tokenize(text.encode("utf-8"))
+            if len(tokens) < 2:
+                continue
+            tokens = tokens[:n_ctx]
+
+            llm.reset()
+            llm.eval(tokens)
+
+            scores = llm.scores
+
+            for i in range(len(tokens) - 1):
+                logits = scores[i]
+                target_id = tokens[i + 1]
+
+                max_logit = max(logits)
+                sum_exp = sum(math.exp(v - max_logit) for v in logits)
+                log_sum_exp = max_logit + math.log(sum_exp)
+                log_prob = logits[target_id] - log_sum_exp
+
+                if math.isfinite(log_prob):
+                    total_nll -= log_prob
+                    total_count += 1
+
+        except AttributeError:
+            break
+        except Exception:
+            continue
+
+    return total_nll, total_count
 
 
 #  Отчёты: CSV + TXT

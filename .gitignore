@@ -1,4 +1,4 @@
-output/
-work/
+output/*
+work/*
 pipelinetest.ipynb
-__pycache__/
+__pycache__/*
