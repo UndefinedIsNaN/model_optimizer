@@ -64,6 +64,30 @@ DEFAULT_PROMPTS = [
     "List five interesting facts about the ocean.",
 ]
 
+EVAL_PAIRS = [
+    (
+        "What is the capital of France?",
+        "The capital of France is Paris.",
+    ),
+    (
+        "Summarize in one sentence: Water is essential for all known forms of life. "
+        "It covers about 71 percent of the Earth's surface. "
+        "Most of the Earth's water is found in its oceans.",
+        "Water is essential for life and covers most of the Earth's surface.",
+    ),
+    (
+        "Translate to French: The weather is nice today.",
+        "Il fait beau aujourd'hui.",
+    ),
+    (
+        "What is 2 + 2?",
+        "2 + 2 equals 4.",
+    ),
+    (
+        "Name three primary colors.",
+        "The three primary colors are red, blue, and yellow.",
+    ),
+]
 
 # ═══════════════════════════════════════════════════════
 #  Монитор памяти
@@ -189,6 +213,8 @@ def _benchmark_worker(
         "perplexity": float("inf"),
         "n_tokens_generated": 0,
         "generated_text": "",
+        "bleu": 0.0,
+        "rouge_l": 0.0,
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -231,8 +257,12 @@ def _benchmark_worker(
 
         # ── 3. Перплексия ──
         ppl_texts = config.get("ppl_texts", [])
-        if ppl_texts:
+        if need_ppl:
             _measure_perplexity(llm, ppl_texts, config, result)
+
+        # -- 4. BLEU / ROUGE-L --
+        if not config.get("skip_bleu_rouge", False):
+            _measure_bleu_rouge(llm, config, result)
 
         result["status"] = "ok"
 
@@ -416,6 +446,141 @@ def _ppl_fallback_eval(
 
     return total_nll, total_count
 
+# -----------------------------------------------------------
+#  BLEU и ROUGE-L
+# -----------------------------------------------------------
+
+def _tokenize_simple(text: str) -> List[str]:
+    """Простая токенизация: lowercase + split по пробелам и пунктуации."""
+    import re
+    return re.findall(r'\w+', text.lower())
+
+
+def _get_ngrams(tokens: List[str], n: int) -> Dict[tuple, int]:
+    """Подсчитать n-граммы."""
+    ngrams: Dict[tuple, int] = {}
+    for i in range(len(tokens) - n + 1):
+        gram = tuple(tokens[i:i + n])
+        ngrams[gram] = ngrams.get(gram, 0) + 1
+    return ngrams
+
+
+def _compute_bleu(reference: str, hypothesis: str, max_n: int = 4) -> float:
+    """
+    Sentence-level BLEU.
+    Среднее геометрическое n-gram precisions (n=1..max_n) + brevity penalty.
+    """
+    ref_tokens = _tokenize_simple(reference)
+    hyp_tokens = _tokenize_simple(hypothesis)
+
+    if len(hyp_tokens) == 0 or len(ref_tokens) == 0:
+        return 0.0
+
+    # Brevity penalty
+    bp = min(1.0, math.exp(1 - len(ref_tokens) / len(hyp_tokens)))
+
+    log_avg = 0.0
+    n_valid = 0
+
+    for n in range(1, max_n + 1):
+        ref_ngrams = _get_ngrams(ref_tokens, n)
+        hyp_ngrams = _get_ngrams(hyp_tokens, n)
+
+        if len(hyp_ngrams) == 0:
+            continue
+
+        clipped = 0
+        total = 0
+        for gram, count in hyp_ngrams.items():
+            clipped += min(count, ref_ngrams.get(gram, 0))
+            total += count
+
+        if total == 0 or clipped == 0:
+            return 0.0
+
+        precision = clipped / total
+        log_avg += math.log(precision)
+        n_valid += 1
+
+    if n_valid == 0:
+        return 0.0
+
+    return bp * math.exp(log_avg / n_valid)
+
+
+def _lcs_length(a: List[str], b: List[str]) -> int:
+    """Длина наибольшей общей подпоследовательности."""
+    m, n = len(a), len(b)
+    if m == 0 or n == 0:
+        return 0
+    # Оптимизация памяти: две строки вместо полной таблицы
+    prev = [0] * (n + 1)
+    curr = [0] * (n + 1)
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(prev[j], curr[j - 1])
+        prev, curr = curr, [0] * (n + 1)
+    return prev[n]
+
+
+def _compute_rouge_l(reference: str, hypothesis: str) -> float:
+    """ROUGE-L F1 на основе LCS."""
+    ref_tokens = _tokenize_simple(reference)
+    hyp_tokens = _tokenize_simple(hypothesis)
+
+    if len(ref_tokens) == 0 or len(hyp_tokens) == 0:
+        return 0.0
+
+    lcs = _lcs_length(ref_tokens, hyp_tokens)
+
+    precision = lcs / len(hyp_tokens)
+    recall = lcs / len(ref_tokens)
+
+    if precision + recall == 0:
+        return 0.0
+
+    f1 = 2 * precision * recall / (precision + recall)
+    return f1
+
+
+def _measure_bleu_rouge(
+    llm, config: Dict[str, Any], result: Dict[str, Any],
+) -> None:
+    """Генерация ответов на eval_pairs и подсчет BLEU / ROUGE-L."""
+    eval_pairs = config.get("eval_pairs", EVAL_PAIRS)
+    max_tokens = config.get("gen_tokens", 128)
+
+    bleu_scores: List[float] = []
+    rouge_scores: List[float] = []
+
+    for prompt, reference in eval_pairs:
+        try:
+            output = llm.create_completion(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=0.1,
+                top_p=0.9,
+            )
+            hypothesis = output["choices"][0].get("text", "").strip()
+        except Exception:
+            continue
+
+        if not hypothesis:
+            continue
+
+        bleu = _compute_bleu(reference, hypothesis)
+        rouge = _compute_rouge_l(reference, hypothesis)
+
+        bleu_scores.append(bleu)
+        rouge_scores.append(rouge)
+
+    if bleu_scores:
+        result["bleu"] = sum(bleu_scores) / len(bleu_scores)
+    if rouge_scores:
+        result["rouge_l"] = sum(rouge_scores) / len(rouge_scores)
 
 #  Отчёты: CSV + TXT
 
@@ -537,19 +702,22 @@ class Reporter:
             f"      TTFT             : {r.get('ttft_ms', 0):.0f} мс",
             f"      Скорость генер.  : {r.get('gen_speed_tps', 0):.2f} tok/sec",
             f"      Пиковая память   : {mem_str}",
-            f"      Перплексия       : {ppl}",
-            f"      Токенов сгенер.  : {r.get('n_tokens_generated', 0)}",
-        ]
+            f"      Perplexity    : {ppl}",
+            f"      BLEU          : {r.get('bleu', 0):.4f}",
+            f"      ROUGE-L       : {r.get('rouge_l', 0):.4f}",
+            f"      Tokens gen    : {r.get('n_tokens_generated', 0)}",
+            ]
 
     def _format_table(self, ok: List[Dict]) -> List[str]:
         if not ok:
             return []
 
         lines = [
-            "═" * 62,
-            "  COMPARISON TABLE",
-            "═" * 62,
+            "COMPARISON TABLE",
             "",
+            f"  {'Model':<32s} {'Size':>7s} {'Speed':>8s} "
+            f"{'TTFT':>7s} {'PPL':>7s} {'BLEU':>6s} {'RGE-L':>6s} {'Mem':>7s}",
+            "  " + "-" * 84,
         ]
 
         # Заголовок
@@ -570,12 +738,19 @@ class Reporter:
             mem = r.get("peak_memory_mb", 0)
             mem_s = f"{mem:.0f}MB" if mem > 0 else "—"
 
+            bleu_v = r.get("bleu", 0)
+            bleu_s = f"{bleu_v:.3f}" if bleu_v > 0 else "--"
+            rouge_v = r.get("rouge_l", 0)
+            rouge_s = f"{rouge_v:.3f}" if rouge_v > 0 else "--"
+
             row = (
                 f"  {name:<32s} "
                 f"{r.get('model_size_mb', 0):>5.0f}MB "
                 f"{r.get('gen_speed_tps', 0):>6.2f}t/s "
                 f"{r.get('ttft_ms', 0):>5.0f}ms "
                 f"{ppl_s:>7s} "
+                f"{bleu_s:>6s} "
+                f"{rouge_s:>6s} "
                 f"{mem_s:>7s}"
             )
             lines.append(row)
@@ -693,8 +868,10 @@ def run_benchmarks(args: argparse.Namespace) -> None:
     logger.info("  Генерация    : %d токенов × %d повторов",
                 args.gen_tokens, args.gen_repeats)
     logger.info("  Таймаут      : %d сек", args.timeout)
-    logger.info("  Перплексия   : %s",
-                "выкл" if args.skip_perplexity else f"{args.ppl_samples} сэмплов")
+    logger.info("  Perplexity : %s",
+                "off" if args.skip_perplexity else f"{args.ppl_samples} samples")
+    logger.info("  BLEU/ROUGE : %s",
+                "off" if args.skip_bleu_rouge else f"{len(EVAL_PAIRS)} pairs")
     logger.info("")
 
     for m in models:
@@ -717,6 +894,8 @@ def run_benchmarks(args: argparse.Namespace) -> None:
         "gen_repeats": args.gen_repeats,
         "prompts": args.prompts or DEFAULT_PROMPTS,
         "ppl_texts": ppl_texts,
+        "skip_bleu_rouge": args.skip_bleu_rouge,
+        "eval_pairs": EVAL_PAIRS,
     }
 
     ok_results: List[Dict] = []
@@ -901,6 +1080,8 @@ def parse_args() -> argparse.Namespace:
         "--ppl-samples", type=int, default=10,
         help="Кол-во текстов для перплексии (по умолчанию: 10)",
     )
+    g3.add_argument("--skip-bleu-rouge", action="store_true",
+                     help="Skip BLEU/ROUGE evaluation")
 
     g4 = p.add_argument_group("Таймаут и изоляция")
     g4.add_argument(
