@@ -590,7 +590,8 @@ class Reporter:
     CSV_FIELDS = [
         "model_name", "model_size_mb", "status", "error_message",
         "load_time_sec", "ttft_ms", "gen_speed_tps",
-        "peak_memory_mb", "perplexity", "n_tokens_generated",
+        "peak_memory_mb", "perplexity", "bleu", "rouge_l",
+        "n_tokens_generated",
         "model_path", "timestamp",
     ]
 
