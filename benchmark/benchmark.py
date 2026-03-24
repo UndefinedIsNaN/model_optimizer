@@ -136,55 +136,74 @@ def load_perplexity_texts(
     source: str = "wikitext",
     n_samples: int = 10,
 ) -> List[str]:
-    """
-    Загружает тексты для оценки перплексии.
-
-    source:
-      "wikitext"  — скачивает wikitext-2-raw из HuggingFace
-      путь к файлу — разбивает на чанки
-    """
     if source == "wikitext":
         try:
             from datasets import load_dataset
-            ds = load_dataset(
-                "wikitext", "wikitext-2-raw-v1", split="test"
-            )
+            ds = _load_wikitext_with_retry()
+            if ds is None:
+                return []
             texts = [
                 r["text"] for r in ds
                 if len(r["text"].strip()) > 100
             ]
-            logger.info(
-                "wikitext: %d подходящих текстов, берём %d",
-                len(texts), min(n_samples, len(texts)),
-            )
             return texts[:n_samples]
-
         except ImportError:
-            logger.warning(
-                "datasets не установлен (pip install datasets). "
-                "Перплексия пропущена."
-            )
+            logger.warning("datasets не установлен")
             return []
         except Exception as e:
             logger.warning("Ошибка загрузки wikitext: %s", e)
             return []
 
-    # Локальный файл
     path = Path(source)
     if path.exists():
         text = path.read_text(encoding="utf-8", errors="ignore")
         chunks = []
-        step = 2000  # ~500 токенов на чанк
+        step = 2000
         for i in range(0, len(text), step):
             chunk = text[i : i + step].strip()
             if len(chunk) > 100:
                 chunks.append(chunk)
-        logger.info("Файл %s: %d чанков, берём %d", path, len(chunks), n_samples)
         return chunks[:n_samples]
 
-    logger.warning("Источник не найден: %s", source)
     return []
 
+
+def _load_wikitext_with_retry():
+    """Загрузить wikitext, при битом кэше -- очистить и повторить."""
+    from datasets import load_dataset
+    import shutil
+
+    try:
+        return load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    except Exception as e:
+        error_msg = str(e)
+        if "0 bytes" in error_msg or "Parquet" in error_msg or "ArrowInvalid" in error_msg:
+            logger.warning("Битый кэш wikitext")
+            _clear_wikitext_cache()
+            try:
+                return load_dataset(
+                    "wikitext", "wikitext-2-raw-v1", split="test",
+                    download_mode="force_redownload",
+                )
+            except Exception as e2:
+                logger.warning("Повторная загрузка не удалась: %s", e2)
+                return None
+        else:
+            raise
+
+
+def _clear_wikitext_cache():
+    import shutil
+    cache_dirs = [
+        Path.home() / ".cache" / "huggingface" / "hub" / "datasets--wikitext",
+        Path.home() / ".cache" / "huggingface" / "datasets" / "wikitext",
+        Path("/root/.cache/huggingface/hub/datasets--wikitext"),
+        Path("/root/.cache/huggingface/datasets/wikitext"),
+    ]
+    for d in cache_dirs:
+        if d.exists():
+            logger.info("Удаляем битый кэш: %s", d)
+            shutil.rmtree(str(d), ignore_errors=True)
 
 # ═══════════════════════════════════════════════════════
 #  Worker — бенчмарк одной модели (child process)
