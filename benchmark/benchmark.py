@@ -189,7 +189,7 @@ def _load_wikitext_with_retry():
         return load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
     except Exception as e:
         error_msg = str(e)
-        if "0 bytes" in error_msg or "Parquet" in error_msg or "ArrowInvalid" in error_msg:
+        if error_msg:
             logger.warning("Битый кэш wikitext")
             _clear_wikitext_cache()
             try:
