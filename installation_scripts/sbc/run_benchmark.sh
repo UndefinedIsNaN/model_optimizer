@@ -83,6 +83,7 @@ python benchmark.py \
     --gen-tokens "${DEFAULT_GEN}" \
     --ppl-samples "${DEFAULT_PPL}" \
     --timeout "${DEFAULT_TIMEOUT}" \
+    --eval-pairs-file "${BENCH_DIR}/eval_pairs.json" \
     "$@" \
     2>&1 | tee "${LOG}"
 

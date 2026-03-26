@@ -167,6 +167,18 @@ def load_perplexity_texts(
 
     return []
 
+def _load_eval_pairs(path: str) -> List[tuple]:
+    """Загрузить пары prompt/reference из JSON файла."""
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pairs = [(item[0], item[1]) for item in data if len(item) >= 2]
+        logger.info("Загружено %d eval pairs из %s", len(pairs), path)
+        return pairs
+    except Exception as e:
+        logger.warning("Ошибка загрузки eval pairs: %s, используем встроенные", e)
+        return EVAL_PAIRS
 
 def _load_wikitext_with_retry():
     """Загрузить wikitext, при битом кэше -- очистить и повторить."""
@@ -234,6 +246,7 @@ def _benchmark_worker(
         "generated_text": "",
         "bleu": 0.0,
         "rouge_l": 0.0,
+        "eval_samples": [],
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -596,11 +609,49 @@ def _measure_bleu_rouge(
         bleu_scores.append(bleu)
         rouge_scores.append(rouge)
 
+        category = "unknown"
+        if isinstance(eval_pairs[0], (list, tuple)) and len(eval_pairs[0]) >= 3:
+            # Ищем категорию для текущей пары
+            for ep in eval_pairs:
+                if ep[0] == prompt and ep[1] == reference and len(ep) >= 3:
+                    category = ep[2]
+                    break
+
+        sample_entry = {
+            "prompt": prompt[:200],
+            "reference": reference[:200],
+            "response": hypothesis[:300],
+            "bleu": bleu,
+            "rouge_l": rouge,
+            "category": category,
+        }
+
+        result.setdefault("eval_samples_all", []).append(sample_entry)
+
+        if len(result.get("eval_samples", [])) < 5:
+            result.setdefault("eval_samples", []).append(sample_entry)
+
     if bleu_scores:
         result["bleu"] = sum(bleu_scores) / len(bleu_scores)
     if rouge_scores:
         result["rouge_l"] = sum(rouge_scores) / len(rouge_scores)
 
+    # Per-category scores
+    cat_scores: Dict[str, Dict[str, list]] = {}
+    for s in result.get("eval_samples_all", []):
+        cat = s.get("category", "unknown")
+        cat_scores.setdefault(cat, {"bleu": [], "rouge": []})
+        cat_scores[cat]["bleu"].append(s["bleu"])
+        cat_scores[cat]["rouge"].append(s["rouge_l"])
+
+    cat_summary = {}
+    for cat, scores in cat_scores.items():
+        cat_summary[cat] = {
+            "bleu": sum(scores["bleu"]) / len(scores["bleu"]) if scores["bleu"] else 0,
+            "rouge_l": sum(scores["rouge"]) / len(scores["rouge"]) if scores["rouge"] else 0,
+            "count": len(scores["bleu"]),
+        }
+    result["scores_by_category"] = cat_summary
 #  Отчёты: CSV + TXT
 
 class Reporter:
@@ -609,8 +660,8 @@ class Reporter:
     CSV_FIELDS = [
         "model_name", "model_size_mb", "status", "error_message",
         "load_time_sec", "ttft_ms", "gen_speed_tps",
-        "peak_memory_mb", "perplexity", "bleu", "rouge_l",
-        "n_tokens_generated",
+        "peak_memory_mb", "perplexity", "ppl_tokens", "bleu", "rouge_l",
+        "n_tokens_generated", "eval_samples",
         "model_path", "timestamp",
     ]
 
@@ -712,21 +763,46 @@ class Reporter:
     def _format_model(self, r: Dict) -> List[str]:
         ppl = self._fmt_ppl(r.get("perplexity", float("inf")))
         mem = r.get("peak_memory_mb", 0)
-        mem_str = f"{mem:.1f} MB" if mem > 0 else "—"
+        mem_str = f"{mem:.1f} MB" if mem > 0 else "--"
 
-        return [
-            f"  ── {r.get('model_name', '?')} ──",
-            f"      Размер файла     : {r.get('model_size_mb', 0):.1f} MB",
-            f"      Статус           : ✅ OK",
-            f"      Время загрузки   : {r.get('load_time_sec', 0):.2f} сек",
-            f"      TTFT             : {r.get('ttft_ms', 0):.0f} мс",
-            f"      Скорость генер.  : {r.get('gen_speed_tps', 0):.2f} tok/sec",
-            f"      Пиковая память   : {mem_str}",
+        lines = [
+            f"  {r.get('model_name', '?')}",
+            f"      Size          : {r.get('model_size_mb', 0):.1f} MB",
+            f"      Status        : OK",
+            f"      Load time     : {r.get('load_time_sec', 0):.2f} sec",
+            f"      TTFT          : {r.get('ttft_ms', 0):.0f} ms",
+            f"      Gen speed     : {r.get('gen_speed_tps', 0):.2f} tok/sec",
+            f"      Peak memory   : {mem_str}",
             f"      Perplexity    : {ppl}",
             f"      BLEU          : {r.get('bleu', 0):.4f}",
             f"      ROUGE-L       : {r.get('rouge_l', 0):.4f}",
             f"      Tokens gen    : {r.get('n_tokens_generated', 0)}",
-            ]
+        ]
+
+        samples = r.get("eval_samples", [])
+        if samples:
+            lines.append("")
+            lines.append("      Eval samples:")
+            for i, s in enumerate(samples):
+                lines.append(f"        [{i+1}] Prompt:    {s['prompt']}")
+                lines.append(f"            Reference: {s['reference']}")
+                resp = s['response'].replace('\n', ' ')
+                lines.append(f"            Response:  {resp}")
+                lines.append(f"            BLEU={s['bleu']:.4f}  ROUGE-L={s['rouge_l']:.4f}")
+                lines.append("")
+
+        cat_scores = r.get("scores_by_category", {})
+        if cat_scores:
+            lines.append("      Scores by category:")
+            for cat, sc in sorted(cat_scores.items()):
+                lines.append(
+                    f"        {cat:<16s}: BLEU={sc['bleu']:.4f}  "
+                    f"ROUGE-L={sc['rouge_l']:.4f}  "
+                    f"({sc['count']} pairs)"
+                )
+            lines.append("")
+            
+        return lines
 
     def _format_table(self, ok: List[Dict]) -> List[str]:
         if not ok:
@@ -904,7 +980,11 @@ def run_benchmarks(args: argparse.Namespace) -> None:
         ppl_texts = load_perplexity_texts(args.ppl_source, args.ppl_samples)
         if not ppl_texts:
             logger.warning("Нет данных для перплексии — пропуск")
-
+    
+    eval_pairs = EVAL_PAIRS
+    if args.eval_pairs_file:
+        eval_pairs = _load_eval_pairs(args.eval_pairs_file)
+        
     # ── Конфиг для воркеров ──
     config: Dict[str, Any] = {
         "n_ctx": args.n_ctx,
@@ -915,7 +995,7 @@ def run_benchmarks(args: argparse.Namespace) -> None:
         "prompts": args.prompts or DEFAULT_PROMPTS,
         "ppl_texts": ppl_texts,
         "skip_bleu_rouge": args.skip_bleu_rouge,
-        "eval_pairs": EVAL_PAIRS,
+        "eval_pairs": eval_pairs,
     }
 
     ok_results: List[Dict] = []
@@ -1102,7 +1182,9 @@ def parse_args() -> argparse.Namespace:
     )
     g3.add_argument("--skip-bleu-rouge", action="store_true",
                      help="Skip BLEU/ROUGE evaluation")
-
+    g3.add_argument("--eval-pairs-file", default=None,
+                     help="JSON file with eval pairs: [[prompt, reference], ...]")
+    
     g4 = p.add_argument_group("Таймаут и изоляция")
     g4.add_argument(
         "--timeout", type=int, default=600,

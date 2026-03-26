@@ -184,6 +184,7 @@ ${TASKSET_CMD:-}python benchmark.py \\
     --gen-tokens ${GEN_TOKENS} \\
     --ppl-samples ${PPL_SAMPLES} \\
     --timeout ${TIMEOUT} \\
+    --eval-pairs-file "\${BENCH_DIR}/eval_pairs.json" \\
     "\$@" \\
     2>&1 | tee "\${LOG}"
 
