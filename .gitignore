@@ -1,4 +1,7 @@
 output/*
+output_quant/*
+venv/*
+logs/*
 work/*
 pipelinetest.ipynb
 __pycache__/*

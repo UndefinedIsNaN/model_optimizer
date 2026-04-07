@@ -593,7 +593,7 @@ def _measure_bleu_rouge(
             output = llm.create_completion(
                 prompt,
                 max_tokens=max_tokens,
-                temperature=0.1,
+                temperature=0.2,
                 top_p=0.9,
             )
             hypothesis = output["choices"][0].get("text", "").strip()
@@ -956,20 +956,6 @@ def run_benchmarks(args: argparse.Namespace) -> None:
         logger.error("Нет моделей! Укажите --models-dir или --models")
         sys.exit(1)
 
-    logger.info("")
-    logger.info("GGUF Model Benchmark")
-    logger.info("  Моделей      : %d", len(models))
-    logger.info("  Контекст     : %d", args.n_ctx)
-    logger.info("  Потоки       : %d", args.n_threads)
-    logger.info("  Генерация    : %d токенов × %d повторов",
-                args.gen_tokens, args.gen_repeats)
-    logger.info("  Таймаут      : %d сек", args.timeout)
-    logger.info("  Perplexity : %s",
-                "off" if args.skip_perplexity else f"{args.ppl_samples} samples")
-    logger.info("  BLEU/ROUGE : %s",
-                "off" if args.skip_bleu_rouge else f"{len(EVAL_PAIRS)} pairs")
-    logger.info("")
-
     for m in models:
         sz = m.stat().st_size / (1024 ** 2)
         logger.info("  • %s (%.1f MB)", m.name, sz)
@@ -984,7 +970,21 @@ def run_benchmarks(args: argparse.Namespace) -> None:
     eval_pairs = EVAL_PAIRS
     if args.eval_pairs_file:
         eval_pairs = _load_eval_pairs(args.eval_pairs_file)
-        
+		
+    logger.info("")
+    logger.info("GGUF Model Benchmark")
+    logger.info("  Моделей      : %d", len(models))
+    logger.info("  Контекст     : %d", args.n_ctx)
+    logger.info("  Потоки       : %d", args.n_threads)
+    logger.info("  Генерация    : %d токенов × %d повторов",
+                args.gen_tokens, args.gen_repeats)
+    logger.info("  Таймаут      : %d сек", args.timeout)
+    logger.info("  Perplexity : %s",
+                "off" if args.skip_perplexity else f"{args.ppl_samples} samples")
+    logger.info("  BLEU/ROUGE : %s",
+                "off" if args.skip_bleu_rouge else f"{len(eval_pairs)} pairs")
+    logger.info("")
+ 
     # ── Конфиг для воркеров ──
     config: Dict[str, Any] = {
         "n_ctx": args.n_ctx,

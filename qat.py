@@ -130,7 +130,7 @@ def qat_train(
 
     step = 0
     total_loss = 0.0
-    logger.info("QAT обучение: %d шагов, lr=%.1e", steps, lr)
+    logger.info("Обучение: %d шагов, lr=%.1e", steps, lr)
 
     while step < steps:
         for batch in dataloader:
@@ -155,7 +155,7 @@ def qat_train(
 
             if step % log_every == 0 or step == steps:
                 logger.info(
-                    "  QAT шаг %4d/%d │ loss=%.4f │ avg=%.4f",
+                    "  Шаг %4d/%d │ loss=%.4f │ avg=%.4f",
                     step, steps, loss.item(), total_loss / step,
                 )
 

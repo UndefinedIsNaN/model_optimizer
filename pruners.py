@@ -300,22 +300,15 @@ class StructuredPruner:
             logger.warning("Не удалось определить конфигурацию attention")
             return {"heads": "не определены"}
 
-        head_dim = hidden // n_heads
-        n_q_remove = max(1, int(n_heads * self.head_sparsity))
-        n_q_keep = n_heads - n_q_remove
-
-        # GQA: удаляем целые KV-группы
+        # Отключаем head pruning для GQA моделей (слишком сложная структура)
         is_gqa = n_kv_heads < n_heads
-        q_per_kv = n_heads // n_kv_heads if is_gqa else 1
-
         if is_gqa:
-            n_kv_remove = max(1, int(n_kv_heads * self.head_sparsity))
-            n_kv_keep = n_kv_heads - n_kv_remove
-            n_q_keep = n_kv_keep * q_per_kv
-            n_q_remove = n_heads - n_q_keep
-        else:
-            n_kv_keep = n_q_keep
-            n_kv_remove = n_q_remove
+            logger.info("Head pruning пропущен для GQA модели (Q heads=%d, KV heads=%d)", 
+                       n_heads, n_kv_heads)
+            return {
+                "Q_heads": f"{n_heads} (GQA, без изменений)",
+                "KV_heads": f"{n_kv_heads} (GQA, без изменений)",
+            }
 
         logger.info(
             "Heads: Q %d→%d, KV %d→%d (head_dim=%d, GQA=%s)",
@@ -335,8 +328,12 @@ class StructuredPruner:
                     kv_importance[kv_h] += w[q_start:q_end].norm().item()
 
         # Выбираем KV-группы для сохранения
-        _, keep_kv = torch.topk(kv_importance, n_kv_keep, largest=True)
-        keep_kv = keep_kv.sort().values
+        if n_kv_keep >= n_kv_heads:
+            # Сохраняем все
+            keep_kv = torch.arange(n_kv_heads)
+        else:
+            _, keep_kv = torch.topk(kv_importance, n_kv_keep, largest=True)
+            keep_kv = keep_kv.sort().values
 
         # Индексы строк для Q-проекции
         keep_q_rows = torch.cat([

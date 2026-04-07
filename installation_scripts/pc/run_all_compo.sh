@@ -1,101 +1,131 @@
-#!/usr/bin/env bash
-# Все 9 комбинаций для одной модели
-#
-# Использование:
-#   bash scripts/pc/run_all_combinations.sh <repo> [quant_type] [доп. аргументы]
-#
-# Примеры:
-#   bash scripts/pc/run_all_combinations.sh Qwen/Qwen2-0.5B
-#   bash scripts/pc/run_all_combinations.sh Qwen/Qwen2-0.5B Q5_K_M
+<#
+Все 9 комбинаций для одной модели
 
-set -euo pipefail
+Использование:
+  .\scripts\pc\run_all_combinations.ps1 <repo> [quant_type] [доп. аргументы]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+Примеры:
+  .\scripts\pc\run_all_combinations.ps1 Qwen/Qwen2-0.5B
+  .\scripts\pc\run_all_combinations.ps1 Qwen/Qwen2-0.5B Q5_K_M
+#>
 
-source "${PROJECT_DIR}/venv/bin/activate"
-cd "${PROJECT_DIR}"
+param(
+    [Parameter(Mandatory=$true, HelpMessage="Репозиторий модели")]
+    [string]$Repo,
 
-REPO="${1:?Использование: $0 <repo> [quant_type]}"
-QUANT_TYPE="${2:-Q4_K_M}"
-shift 2 2>/dev/null || shift 1 2>/dev/null || true
+    [Parameter(Mandatory=$false)]
+    [string]$QuantType = "Q4_K_M",
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG="${PROJECT_DIR}/logs/all_combos_${TIMESTAMP}.log"
-mkdir -p "${PROJECT_DIR}/logs"
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$ExtraArgs
+)
 
-echo "Все 9 комбинаций" | tee "${LOG}"
-echo "  Repo:  ${REPO}" | tee -a "${LOG}"
-echo "  Quant: ${QUANT_TYPE}" | tee -a "${LOG}"
-echo "" | tee -a "${LOG}"
+$ErrorActionPreference = "Stop"
 
-TOTAL=9
-CURRENT=0
-FAILED=0
-SUCCEEDED=0
-TIMES=()
+$ScriptDir = $PSScriptRoot
+$ProjectDir = (Resolve-Path "$ScriptDir\..\..").Path
 
-run_one() {
-    local pruning="$1" method="$2" order="$3"
+# Активация виртуального окружения
+& "$ProjectDir\venv\Scripts\Activate.ps1"
+Set-Location $ProjectDir
 
-    CURRENT=$((CURRENT + 1))
-    echo "" | tee -a "${LOG}"
-    echo "[${CURRENT}/${TOTAL}] ${pruning} + ${method} (${order})" | tee -a "${LOG}"
+$Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$Log = "$ProjectDir\logs\all_combos_$Timestamp.log"
+New-Item -ItemType Directory -Force -Path "$ProjectDir\logs" | Out-Null
 
-    local START_SEC=$SECONDS
-
-    if python main.py \
-        --repo "${REPO}" \
-        --pruning "${pruning}" \
-        --quant-method "${method}" \
-        --quant-type "${QUANT_TYPE}" \
-        --order "${order}" \
-        --recovery-steps 50 \
-        --qat-steps 100 \
-        --output-dir "${PROJECT_DIR}/output" \
-        --work-dir "${PROJECT_DIR}/work" \
-        "$@" \
-        2>&1 | tee -a "${LOG}"; then
-
-        local ELAPSED=$(( SECONDS - START_SEC ))
-        echo "  OK (${ELAPSED} сек)" | tee -a "${LOG}"
-        SUCCEEDED=$((SUCCEEDED + 1))
-        TIMES+=("${pruning}+${method}+${order}: ${ELAPSED}s")
-    else
-        echo "  FAIL" | tee -a "${LOG}"
-        FAILED=$((FAILED + 1))
-    fi
+function Write-Log {
+    param([string]$Message)
+    $Message | Tee-Object -FilePath $Log -Append
 }
 
-run_one magnitude_20 ptq prune_first
-run_one magnitude_30 ptq prune_first
-run_one structured   ptq prune_first
+Write-Log "Все 9 комбинаций"
+Write-Log "  Repo:  $Repo"
+Write-Log "  Quant: $QuantType"
+Write-Log ""
 
-run_one magnitude_20 qat prune_first
-run_one magnitude_30 qat prune_first
-run_one structured   qat prune_first
+$Total = 9
+$Current = 0
+$Failed = 0
+$Succeeded = 0
+$Times = @()
 
-run_one magnitude_20 qat quant_first
-run_one magnitude_30 qat quant_first
-run_one structured   qat quant_first
+function Run-One {
+    param(
+        [string]$Pruning,
+        [string]$Method,
+        [string]$Order
+    )
 
-echo "" | tee -a "${LOG}"
-echo "Итого: ${SUCCEEDED}/${TOTAL} успешно, ${FAILED} ошибок" | tee -a "${LOG}"
-echo "" | tee -a "${LOG}"
+    $script:Current++
+    Write-Log ""
+    Write-Log "[$Current/$Total] $Pruning + $Method ($Order)"
 
-for t in "${TIMES[@]}"; do
-    echo "  ${t}" | tee -a "${LOG}"
-done
+    $StartTime = Get-Date
 
-echo "" | tee -a "${LOG}"
-echo "Готовые модели:" | tee -a "${LOG}"
-for f in "${PROJECT_DIR}"/output/*.gguf; do
-    if [[ -f "$f" ]]; then
-        SZ=$(du -h "$f" | cut -f1)
-        echo "  ${SZ}  $(basename "$f")" | tee -a "${LOG}"
-    fi
-done
+    $ArgsList = @(
+        "main.py",
+        "--repo", $Repo,
+        "--pruning", $Pruning,
+        "--quant-method", $Method,
+        "--quant-type", $QuantType,
+        "--order", $Order,
+        "--recovery-steps", "50",
+        "--qat-steps", "100",
+        "--output-dir", "$ProjectDir\output",
+        "--work-dir", "$ProjectDir\work"
+    ) + $ExtraArgs
 
-echo "" | tee -a "${LOG}"
-echo "Отправьте на одноплатники: bash scripts/pc/deploy.sh" | tee -a "${LOG}"
-echo "Лог: ${LOG}"
+    try {
+        & python @ArgsList 2>&1 | Tee-Object -FilePath $Log -Append
+        $ExitCode = $LASTEXITCODE
+    }
+    catch {
+        $ExitCode = 1
+    }
+
+    $Elapsed = [math]::Round(((Get-Date) - $StartTime).TotalSeconds)
+
+    if ($ExitCode -eq 0) {
+        Write-Log "  OK (${Elapsed} сек)"
+        $script:Succeeded++
+        $script:Times += "$Pruning+$Method+$Order: ${Elapsed}s"
+    }
+    else {
+        Write-Log "  FAIL"
+        $script:Failed++
+    }
+}
+
+# Запуск всех комбинаций
+Run-One "magnitude_20" "ptq" "prune_first"
+Run-One "magnitude_30" "ptq" "prune_first"
+Run-One "structured"   "ptq" "prune_first"
+
+Run-One "magnitude_20" "qat" "prune_first"
+Run-One "magnitude_30" "qat" "prune_first"
+Run-One "structured"   "qat" "prune_first"
+
+Run-One "magnitude_20" "qat" "quant_first"
+Run-One "magnitude_30" "qat" "quant_first"
+Run-One "structured"   "qat" "quant_first"
+
+Write-Log ""
+Write-Log "Итого: $Succeeded/$Total успешно, $Failed ошибок"
+Write-Log ""
+
+foreach ($t in $Times) {
+    Write-Log "  $t"
+}
+
+Write-Log ""
+Write-Log "Готовые модели:"
+
+$GgufFiles = Get-ChildItem -Path "$ProjectDir\output" -Filter "*.gguf" -ErrorAction SilentlyContinue
+foreach ($f in $GgufFiles) {
+    $Size = [math]::Round($f.Length / 1MB, 2)
+    Write-Log "  ${Size}MB  $($f.Name)"
+}
+
+Write-Log ""
+Write-Log "Отправьте на одноплатники: .\scripts\pc\deploy.ps1"
+Write-Log "Лог: $Log"
